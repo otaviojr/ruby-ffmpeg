@@ -33,6 +33,8 @@ VALUE reader_register_class(VALUE module, VALUE super) {
 	rb_define_method(_klass, "streams", 		reader_streams, 0);
 	rb_define_method(_klass, "metadata", 		reader_metadata, 0);
 
+	rb_define_method(_klass, "convert", 		reader_metadata, 0);
+	
 	return _klass;
 }
 
@@ -206,6 +208,100 @@ VALUE streams_to_ruby_array(VALUE self, AVFormatContext * format) {
 	}
 
 	return streams;
+}
+
+VALUE convert(VALUE self, VALUE dst_io)
+{
+	ReaderInternal * internal;
+	
+	Data_Get_Struct(self, ReaderInternal, internal);
+
+	VALUE rb_filename = rb_funcall(dst_io, rb_intern("filename"), 0, NULL);
+	if (TYPE(rb_filename) == T_NIL) return 0;
+	
+	Check_Type(rb_filename, T_STRING);
+	
+	char* filename = StringValue(rb_filename);	
+	AVOutputFormat* dst_format = av_guess_format(NULL, filename, NULL)
+	if(!dst_format) rb_raise(rb_eLoadError, "Invalid format");
+	
+	AVFormatContext * format_context = avformat_alloc_context();
+	if(!format_context) rb_raise(rb_eNoMemError, "No enough memory - AVFormatContext");
+	
+	avFormatContext->oformat = dst_format;
+	
+	unsigned i = 0;
+	for(; i < internal->format->nb_streams; ++i) {
+		AVCodec* codec = NULL
+		switch (internal->format->streams[i]->codec->codec_type) {
+			case AVMEDIA_TYPE_VIDEO: {
+				codec = avcodec_find_encoder(dst_format->video_codec);
+				break;
+			}
+			case AVMEDIA_TYPE_AUDIO: {
+				codec = avcodec_find_encoder(dst_format->audio_codec);
+				break;
+			}
+			default: {
+				continue;
+			}
+		}
+		
+		if(!codec) rb_raise(rb_eLoadError, "Encoder not found");
+		
+		AVStream* output_stream = avformat_new_stream(format_context,codec);
+		if (!output_stream) rb_raise(rb_eNoMemError, "Error creating output stream");
+		
+		output_stream->codec->width = internal->format->streams[i]->codec->width;
+		output_stream->codec->height = internal->format->streams[i]->codec->height;
+		output_stream->codec->bit_rate = internal->format->streams[i]->codec->bit_rate;
+		output_stream->codec->time_base = internal->format->streams[i]->codec->time_base;
+		/* emit one intra frame every ten frames */
+		output_stream->codec->gop_size = internal->format->streams[i]->codec->gop_size;
+		output_stream->codec->max_b_frames = internal->format->streams[i]->codec->max_b_frames;
+		output_stream->codec->pix_fmt = internal->format->streams[i]->codec->pix_fmt;
+		
+		if (avcodec_open2(output_stream->codec, codec, NULL) < 0) rb_raise(rb_eLoadError, "Error opening codec");
+		
+		AVFrame *frame = avcodec_alloc_frame();
+		if(!frame) rb_raise(rb_eNoMemError, "No enough memory - AVFrame");
+		
+		frame->format = output_stream->codec->pix_fmt;
+    	frame->width  = output_stream->codec->width;
+    	frame->height = output_stream->codec->height;
+    	
+    	ret = av_image_alloc(frame->data, frame->linesize, frame->width, frame->height, frame->pix_fmt, 32);
+    	if (ret < 0) rb_raise(rb_eNoMemError, "No enough memory - Could not allocate raw picture buffer");
+    	
+    	AVIOContext * protocol = avio_alloc_context(av_malloc(reader_WRITE_BUFFER_SIZE), reader_WRITE_BUFFER_SIZE, 0, &dst_io, NULL, write_packet, NULL);
+    	protocol->seekable = 0;
+    	format_context->pb = protocol;
+    	
+		// some formats want stream headers to be separate
+    	if(format_context->oformat->flags & AVFMT_GLOBALHEADER)
+        	output_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
+        	
+        avformat_write_header(format_context, NULL);
+        
+        //TODO: Encode
+        
+         av_write_trailer(avFormatContext);
+         
+         avcodec_close(output_stream->codec);
+         av_free(output_stream->codec);
+         av_free(protocol);
+	}
+	
+	av_free(format_context);
+	
+	return QTrue;
+}
+
+int write_packet(void * opaque, uint8_t * buffer, int buffer_size) {
+	VALUE dst_io = *((VALUE *)opaque);
+	
+	rb_funcall(dst_io, rb_intern("write"), rb_str_new(buffer,buffer_size));
+	return buffer_size;
 }
 
 // Read next block of data

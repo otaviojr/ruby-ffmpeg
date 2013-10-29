@@ -5,6 +5,7 @@
 
 // Definitions
 #define reader_READ_BUFFER_SIZE		8192		// Buffer size for reading
+#define reader_WRITE_BUFFER_SIZE	8192		// Buffer size for writing
 
 // Internal Data
 typedef struct {
