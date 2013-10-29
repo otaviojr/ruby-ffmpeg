@@ -66,8 +66,6 @@ VALUE audio_stream_new(VALUE reader, AVStream * stream) {
 	internal->base.stream = stream;
 	internal->base.reader = reader;
 	internal->base.metadata = av_dictionary_to_ruby_hash(stream->metadata);
-	internal->base.duration = stream->duration;
-	internal->base.frame_count = stream->nb_frames;
 
 	return self;
 }
